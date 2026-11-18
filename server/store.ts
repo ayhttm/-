@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { User, Category, Department, Item, StockIn, InventoryRequest, Session } from '../src/types.js';
 
@@ -15,6 +16,23 @@ interface PersistedStoreData {
   lastSavedAt?: string;
 }
 
+interface SignedTokenPayload {
+  uid: string;
+  usr: string;
+  role: 'Admin' | 'User';
+  name: string;
+  dept: string;
+  pos?: string;
+  phone?: string;
+  photo?: string;
+  exp: number;
+}
+
+const SESSION_SECRET =
+  process.env.SESSION_SECRET ||
+  process.env.APP_SESSION_SECRET ||
+  'panthai_inventory_hmac_2026_secret_key';
+
 export class InventoryStore {
   public users: User[] = [];
   public categories: Category[] = [];
@@ -26,9 +44,12 @@ export class InventoryStore {
   public sessions: Session[] = [];
   public lastSavedAt: string = '';
 
-  private readonly dataFilePath = path.join(process.cwd(), 'server', 'data', 'store.json');
+  private readonly repoDataPath = path.join(process.cwd(), 'server', 'data', 'store.json');
+  private readonly tmpDataPath = path.join(os.tmpdir(), 'inventory-store.json');
+  private activeDataPath: string;
 
   constructor() {
+    this.activeDataPath = process.env.VERCEL ? this.tmpDataPath : this.repoDataPath;
     if (!this.loadFromDisk()) {
       this.seedDefaults();
       this.save();
@@ -36,57 +57,79 @@ export class InventoryStore {
   }
 
   public loadFromDisk(): boolean {
-    try {
-      if (!fs.existsSync(this.dataFilePath)) {
-        return false;
-      }
-      const raw = fs.readFileSync(this.dataFilePath, 'utf-8');
-      if (!raw.trim()) return false;
-      const parsed: PersistedStoreData = JSON.parse(raw);
+    const candidates = process.env.VERCEL
+      ? [this.tmpDataPath, this.repoDataPath]
+      : [this.repoDataPath, this.tmpDataPath];
 
-      if (!Array.isArray(parsed.users) || parsed.users.length === 0) {
-        return false;
-      }
+    for (const filePath of candidates) {
+      try {
+        if (!fs.existsSync(filePath)) {
+          continue;
+        }
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        if (!raw.trim()) continue;
+        const parsed: PersistedStoreData = JSON.parse(raw);
 
-      this.users = parsed.users;
-      this.categories = Array.isArray(parsed.categories) ? parsed.categories : [];
-      this.departments = Array.isArray(parsed.departments) ? parsed.departments : [];
-      this.items = Array.isArray(parsed.items) ? parsed.items : [];
-      this.stockIn = Array.isArray(parsed.stockIn) ? parsed.stockIn : [];
-      this.requests = Array.isArray(parsed.requests) ? parsed.requests : [];
-      this.settings = parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {};
-      this.sessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
-      this.lastSavedAt = parsed.lastSavedAt || new Date().toISOString();
-      return true;
-    } catch (err) {
-      console.error('Failed to load persisted store, falling back to defaults:', err);
-      return false;
+        if (!Array.isArray(parsed.users) || parsed.users.length === 0) {
+          continue;
+        }
+
+        this.users = parsed.users;
+        this.categories = Array.isArray(parsed.categories) ? parsed.categories : [];
+        this.departments = Array.isArray(parsed.departments) ? parsed.departments : [];
+        this.items = Array.isArray(parsed.items) ? parsed.items : [];
+        this.stockIn = Array.isArray(parsed.stockIn) ? parsed.stockIn : [];
+        this.requests = Array.isArray(parsed.requests) ? parsed.requests : [];
+        this.settings = parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {};
+        this.sessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
+        this.lastSavedAt = parsed.lastSavedAt || new Date().toISOString();
+        return true;
+      } catch (err) {
+        console.error(`Failed to load persisted store from ${filePath}:`, err);
+      }
     }
+    return false;
   }
 
   public save(): void {
-    try {
-      const dir = path.dirname(this.dataFilePath);
+    this.lastSavedAt = new Date().toISOString();
+    const payload: PersistedStoreData = {
+      users: this.users,
+      categories: this.categories,
+      departments: this.departments,
+      items: this.items,
+      stockIn: this.stockIn,
+      requests: this.requests,
+      settings: this.settings,
+      sessions: this.sessions,
+      lastSavedAt: this.lastSavedAt
+    };
+    const serialized = JSON.stringify(payload, null, 2);
+
+    const writeToPath = (targetPath: string) => {
+      const dir = path.dirname(targetPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      this.lastSavedAt = new Date().toISOString();
-      const payload: PersistedStoreData = {
-        users: this.users,
-        categories: this.categories,
-        departments: this.departments,
-        items: this.items,
-        stockIn: this.stockIn,
-        requests: this.requests,
-        settings: this.settings,
-        sessions: this.sessions,
-        lastSavedAt: this.lastSavedAt
-      };
-      const tmpPath = `${this.dataFilePath}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), 'utf-8');
-      fs.renameSync(tmpPath, this.dataFilePath);
-    } catch (err) {
-      console.error('Failed to save store to disk:', err);
+      const tmpPath = `${targetPath}.tmp`;
+      fs.writeFileSync(tmpPath, serialized, 'utf-8');
+      fs.renameSync(tmpPath, targetPath);
+    };
+
+    try {
+      writeToPath(this.activeDataPath);
+    } catch (err: any) {
+      if (this.activeDataPath !== this.tmpDataPath) {
+        try {
+          this.activeDataPath = this.tmpDataPath;
+          writeToPath(this.tmpDataPath);
+          return;
+        } catch (tmpErr) {
+          console.error('Failed to save store to /tmp fallback:', tmpErr);
+        }
+      } else {
+        console.error('Failed to save store to disk:', err);
+      }
     }
   }
 
@@ -97,6 +140,68 @@ export class InventoryStore {
   public generateId(prefix: string): string {
     const uuid = crypto.randomUUID().replace(/-/g, '').substring(0, 8).toUpperCase();
     return `${prefix}-${uuid}`;
+  }
+
+  private signPayload(encodedPayload: string): string {
+    return crypto
+      .createHmac('sha256', SESSION_SECRET)
+      .update(encodedPayload)
+      .digest('base64url');
+  }
+
+  public issueToken(user: User, ttlMs = 12 * 60 * 60 * 1000): { token: string; expiresAt: string } {
+    const expMs = Date.now() + ttlMs;
+    const expiresAt = new Date(expMs).toISOString();
+    const payload: SignedTokenPayload = {
+      uid: user.user_id,
+      usr: user.username,
+      role: user.role,
+      name: user.fullname,
+      dept: user.department,
+      pos: user.position,
+      phone: user.phone,
+      photo: user.profile_photo,
+      exp: expMs
+    };
+    const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+    const sig = this.signPayload(encoded);
+    const token = `st.${encoded}.${sig}`;
+
+    this.sessions.push({
+      token,
+      user_id: user.user_id,
+      expires_at: expiresAt,
+      created_at: new Date().toISOString()
+    });
+    // Keep session history bounded
+    if (this.sessions.length > 200) {
+      this.sessions = this.sessions.slice(-100);
+    }
+    this.save();
+    return { token, expiresAt };
+  }
+
+  private verifySignedToken(token: string): SignedTokenPayload | null {
+    if (!token.startsWith('st.')) return null;
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [, encoded, sig] = parts;
+    if (!encoded || !sig) return null;
+
+    const expectedSig = this.signPayload(encoded);
+    const sigBuf = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as SignedTokenPayload;
+      if (!parsed || !parsed.uid || !parsed.exp) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
   }
 
   public docNo(sheetType: 'StockIn' | 'Requests' | 'StockOut', prefix: string): string {
@@ -352,10 +457,42 @@ export class InventoryStore {
     }
   }
 
-  // Session verification
+  // Session verification (supports stateless HMAC tokens for serverless + legacy session records)
   public verifyToken(token: string): User {
     if (!token) throw new Error('ไม่พบ Token กรุณาเข้าสู่ระบบใหม่');
     const now = Date.now();
+
+    const signed = this.verifySignedToken(token);
+    if (signed) {
+      if (now > signed.exp) {
+        throw new Error('Session หมดอายุแล้ว กรุณาล็อกอินใหม่');
+      }
+      const existing = this.users.find(
+        u => u.user_id === signed.uid || u.username.trim().toLowerCase() === signed.usr.trim().toLowerCase()
+      );
+      if (existing) {
+        if (existing.status !== 'active') {
+          throw new Error('บัญชีผู้ใช้งานระงับการใช้งานหรือไม่อนุญาต');
+        }
+        return existing;
+      }
+      // Reconstruct user on stateless serverless cold start
+      const restored: User = {
+        user_id: signed.uid,
+        username: signed.usr,
+        fullname: signed.name,
+        phone: signed.phone || '',
+        position: signed.pos || '',
+        role: signed.role,
+        department: signed.dept || 'บริหารทั่วไป',
+        status: 'active',
+        approval_note: '',
+        profile_photo: signed.photo || '',
+        created_at: new Date().toISOString()
+      };
+      return restored;
+    }
+
     const session = this.sessions.find(s => s.token === token);
     if (!session) throw new Error('Session ไม่ถูกต้อง กรุณาล็อกอินใหม่');
 

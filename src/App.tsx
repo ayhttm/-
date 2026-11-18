@@ -228,6 +228,13 @@ export default function App() {
         message: json.message || 'ไม่สามารถเข้าสู่ระบบด้วย Google ได้'
       };
     } catch (err: any) {
+      if (err?.code === 'auth/unauthorized-domain') {
+        const host = typeof window !== 'undefined' ? window.location.hostname : '';
+        return {
+          success: false,
+          message: `โดเมน "${host}" ยังไม่ได้รับอนุญาตให้ใช้ Google Login ใน Firebase Console (auth/unauthorized-domain) กรุณาเพิ่มโดเมนนี้ใน Firebase Authentication > Settings > Authorized domains หรือเข้าสู่ระบบด้วยชื่อผู้ใช้และรหัสผ่าน`
+        };
+      }
       if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') {
         return { success: false, message: 'ยกเลิกการเข้าสู่ระบบด้วย Google' };
       }

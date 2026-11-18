@@ -78,10 +78,13 @@ export const GoogleSheetsPanel: React.FC<GoogleSheetsPanelProps> = ({
         text: `เชื่อมต่อบัญชี Google (${user.email}) สำเร็จแล้ว กำลังตรวจสอบสเปรดชีต...`
       });
     } catch (e: any) {
+      const host = typeof window !== 'undefined' ? window.location.hostname : '';
       const msg =
-        e?.code === 'auth/popup-closed-by-user'
-          ? 'ยกเลิกการเข้าสู่ระบบ Google (Popup ถูกปิด)'
-          : e?.message || 'ไม่สามารถเข้าสู่ระบบ Google ได้';
+        e?.code === 'auth/unauthorized-domain'
+          ? `โดเมน "${host}" ยังไม่ได้รับอนุญาตใน Firebase Authentication (auth/unauthorized-domain) กรุณาเพิ่มโดเมนนี้ใน Firebase Console > Authentication > Settings > Authorized domains`
+          : e?.code === 'auth/popup-closed-by-user'
+            ? 'ยกเลิกการเข้าสู่ระบบ Google (Popup ถูกปิด)'
+            : e?.message || 'ไม่สามารถเข้าสู่ระบบ Google ได้';
       setMessage({ type: 'error', text: msg });
     } finally {
       setIsLoggingIn(false);
