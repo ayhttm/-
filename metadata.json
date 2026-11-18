@@ -1,0 +1,6 @@
+{
+  "name": "ระบบคลังวัสดุอุปกรณ์",
+  "description": "ระบบคลังวัสดุอุปกรณ์ (Inventory Management System) เชื่อมต่อ 10DfYf1oM8Vzp5NSIk9Rd9fvEcwqnet_A_c4WnzrzJU4",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
