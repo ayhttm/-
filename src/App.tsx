@@ -14,9 +14,15 @@ import { LoginModal } from './components/LoginModal';
 import { RegisterModal } from './components/RegisterModal';
 import { ProfileModal } from './components/ProfileModal';
 import { RefreshCw } from 'lucide-react';
-import { initGoogleAuth, getGoogleAccessToken, getCurrentGoogleUser } from './lib/googleAuth';
+import { initGoogleAuth, googleSignIn, googleLogout, getGoogleAccessToken, getCurrentGoogleUser } from './lib/googleAuth';
 import type { User as FirebaseUser } from 'firebase/auth';
-import { readPersisted, writePersisted } from './lib/persistedState';
+import {
+  readPersisted,
+  writePersisted,
+  safeGetStorageItem,
+  safeSetStorageItem,
+  safeRemoveStorageItem
+} from './lib/persistedState';
 
 const DEFAULT_SPREADSHEET_ID = '10DfYf1oM8Vzp5NSIk9Rd9fvEcwqnet_A_c4WnzrzJU4';
 const VALID_TABS: TabType[] = [
@@ -31,7 +37,7 @@ const VALID_TABS: TabType[] = [
 ];
 
 export default function App() {
-  const [token, setToken] = useState<string | null>(localStorage.getItem('inventory_token'));
+  const [token, setToken] = useState<string | null>(() => safeGetStorageItem('inventory_token'));
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<Item[]>([]);
@@ -85,7 +91,7 @@ export default function App() {
         }));
       } else {
         // Token invalid or expired
-        localStorage.removeItem('inventory_token');
+        safeRemoveStorageItem('inventory_token');
         setToken(null);
         setCurrentUser(null);
       }
@@ -165,24 +171,72 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  const handleLogin = async (username: string, password: string): Promise<boolean> => {
+  const handleLogin = async (
+    username: string,
+    password: string
+  ): Promise<{ success: boolean; message?: string }> => {
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ username: username.trim(), password })
       });
       const json = await res.json();
       if (json.success && json.token) {
-        localStorage.setItem('inventory_token', json.token);
-        setToken(json.token);
+        safeSetStorageItem('inventory_token', json.token);
         setCurrentUser(json.user);
-        await fetchInitialData(json.token);
-        return true;
+        setToken(json.token);
+        return { success: true, message: json.message };
       }
-      return false;
-    } catch (e) {
-      return false;
+      return {
+        success: false,
+        message: json.message || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง'
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        message: e?.message || 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง'
+      };
+    }
+  };
+
+  const handleGoogleAppLogin = async (): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const { user, accessToken } = await googleSignIn();
+      const res = await fetch('/api/auth/google-login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          name: user.displayName || '',
+          picture: user.photoURL || ''
+        })
+      });
+      const json = await res.json();
+      if (json.success && json.token) {
+        safeSetStorageItem('inventory_token', json.token);
+        setCurrentUser(json.user);
+        setToken(json.token);
+        verifyGoogleSheetsStatus(undefined, accessToken, user);
+        return { success: true, message: json.message };
+      }
+      return {
+        success: false,
+        message: json.message || 'ไม่สามารถเข้าสู่ระบบด้วย Google ได้'
+      };
+    } catch (err: any) {
+      if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') {
+        return { success: false, message: 'ยกเลิกการเข้าสู่ระบบด้วย Google' };
+      }
+      if (err?.code === 'auth/popup-blocked') {
+        return { success: false, message: 'เบราว์เซอร์บล็อกหน้าต่างป๊อปอัป กรุณาอนุญาตป๊อปอัปแล้วลองใหม่' };
+      }
+      return {
+        success: false,
+        message: err?.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google'
+      };
     }
   };
 
@@ -197,7 +251,8 @@ export default function App() {
         // Ignore logout error
       }
     }
-    localStorage.removeItem('inventory_token');
+    await googleLogout().catch(() => {});
+    safeRemoveStorageItem('inventory_token');
     setToken(null);
     setCurrentUser(null);
   };
@@ -349,6 +404,7 @@ export default function App() {
       {!currentUser && (
         <LoginModal
           onLogin={handleLogin}
+          onGoogleLogin={handleGoogleAppLogin}
           onOpenRegister={() => setRegisterOpen(true)}
         />
       )}

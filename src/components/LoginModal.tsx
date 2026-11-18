@@ -1,15 +1,26 @@
 import React, { useState } from 'react';
 import { Package, Lock, User as UserIcon, LogIn, AlertCircle } from 'lucide-react';
 
+export interface LoginResult {
+  success: boolean;
+  message?: string;
+}
+
 interface LoginModalProps {
-  onLogin: (username: string, password: string) => Promise<boolean>;
+  onLogin: (username: string, password: string) => Promise<LoginResult>;
+  onGoogleLogin?: () => Promise<LoginResult>;
   onOpenRegister: () => void;
 }
 
-export const LoginModal: React.FC<LoginModalProps> = ({ onLogin, onOpenRegister }) => {
+export const LoginModal: React.FC<LoginModalProps> = ({
+  onLogin,
+  onGoogleLogin,
+  onOpenRegister
+}) => {
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('admin123');
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -17,14 +28,30 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLogin, onOpenRegister 
     setError(null);
     setLoading(true);
     try {
-      const success = await onLogin(username, password);
-      if (!success) {
-        setError('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง หรือบัญชีรออนุมัติ');
+      const result = await onLogin(username, password);
+      if (!result.success) {
+        setError(result.message || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง หรือบัญชีรออนุมัติ');
       }
     } catch (err: any) {
-      setError(err.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
+      setError(err?.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleClick = async () => {
+    if (!onGoogleLogin) return;
+    setError(null);
+    setGoogleLoading(true);
+    try {
+      const result = await onGoogleLogin();
+      if (!result.success) {
+        setError(result.message || 'ไม่สามารถเข้าสู่ระบบด้วย Google ได้');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google');
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -58,6 +85,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLogin, onOpenRegister 
               <input
                 type="text"
                 required
+                autoComplete="username"
                 value={username}
                 onChange={e => setUsername(e.target.value)}
                 placeholder="เช่น admin หรือ user"
@@ -75,6 +103,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLogin, onOpenRegister 
               <input
                 type="password"
                 required
+                autoComplete="current-password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -85,20 +114,56 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLogin, onOpenRegister 
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white font-semibold text-sm rounded-xl transition shadow-lg flex items-center justify-center gap-2"
+            disabled={loading || googleLoading}
+            className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white font-semibold text-sm rounded-xl transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
           >
             <LogIn className="w-4 h-4" />
             <span>{loading ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}</span>
           </button>
         </form>
 
+        {onGoogleLogin && (
+          <div className="space-y-3">
+            <div className="relative flex items-center justify-center">
+              <div className="border-t border-slate-800 w-full" />
+              <span className="bg-slate-900 px-3 text-[11px] text-slate-500 whitespace-nowrap">
+                หรือเข้าสู่ระบบด้วยบัญชี Google
+              </span>
+              <div className="border-t border-slate-800 w-full" />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleGoogleClick}
+              disabled={loading || googleLoading}
+              className="gsi-material-button w-full"
+            >
+              <div className="gsi-material-button-state" />
+              <div className="gsi-material-button-content-wrapper">
+                <div className="gsi-material-button-icon">
+                  <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style={{ display: 'block' }}>
+                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+                    <path fill="none" d="M0 0h48v48H0z" />
+                  </svg>
+                </div>
+                <span className="gsi-material-button-contents">
+                  {googleLoading ? 'กำลังเชื่อมต่อ Google...' : 'Sign in with Google'}
+                </span>
+              </div>
+            </button>
+          </div>
+        )}
+
         <div className="border-t border-slate-800 pt-4 text-center space-y-2">
           <div className="text-xs text-slate-400">
             ยังไม่มีบัญชีผู้ใช้งาน?{' '}
             <button
+              type="button"
               onClick={onOpenRegister}
-              className="text-emerald-400 hover:underline font-semibold"
+              className="text-emerald-400 hover:underline font-semibold cursor-pointer"
             >
               ลงทะเบียนใหม่
             </button>

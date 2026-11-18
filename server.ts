@@ -157,13 +157,24 @@ async function startServer() {
   // APP AUTHENTICATION & SESSIONS
   // --------------------------------------------------------------------------
   app.post('/api/auth/login', (req, res) => {
-    const { username, password } = req.body;
-    if (!username || !password) {
+    const cleanUsername = String(req.body?.username || '').trim();
+    const rawPassword = String(req.body?.password || '');
+    if (!cleanUsername || !rawPassword) {
       return res.status(400).json({ success: false, message: 'กรุณากรอกชื่อผู้ใช้และรหัสผ่าน' });
     }
 
-    const hashed = store.hashPassword(password);
-    const user = store.users.find(u => u.username === username && u.password === hashed);
+    const hashed = store.hashPassword(rawPassword);
+    const user = store.users.find(u => {
+      if (u.username.trim().toLowerCase() !== cleanUsername.toLowerCase()) return false;
+      const storedPass = String(u.password || '');
+      if (storedPass === hashed) return true;
+      // Support plaintext passwords if imported manually via Google Sheets, upgrading to SHA-256
+      if (storedPass.length !== 64 && storedPass === rawPassword) {
+        u.password = hashed;
+        return true;
+      }
+      return false;
+    });
 
     if (!user) {
       return res.json({ success: false, message: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
@@ -200,20 +211,117 @@ async function startServer() {
     });
   });
 
+  app.post('/api/auth/google-login', async (req, res) => {
+    try {
+      const accessToken = extractGoogleBearerToken(req);
+      if (!accessToken) {
+        return res.status(401).json({ success: false, message: 'ไม่พบ Google Access Token' });
+      }
+
+      const tokenInfoRes = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`
+      );
+      if (!tokenInfoRes.ok) {
+        return res.status(401).json({ success: false, message: 'Google Token ไม่ถูกต้องหรือหมดอายุ กรุณาลองใหม่อีกครั้ง' });
+      }
+      const tokenInfo: any = await tokenInfoRes.json();
+      let verifiedEmail = String(tokenInfo.email || '').trim().toLowerCase();
+      let displayName = String(req.body?.name || '').trim();
+      let photoUrl = String(req.body?.picture || '').trim();
+
+      if (!verifiedEmail) {
+        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (userInfoRes.ok) {
+          const userInfo: any = await userInfoRes.json();
+          verifiedEmail = String(userInfo.email || '').trim().toLowerCase();
+          if (!displayName && userInfo.name) displayName = String(userInfo.name).trim();
+          if (!photoUrl && userInfo.picture) photoUrl = String(userInfo.picture).trim();
+        }
+      }
+
+      if (!verifiedEmail) {
+        return res.status(401).json({ success: false, message: 'ไม่สามารถยืนยันอีเมลจากบัญชี Google ได้' });
+      }
+
+      if (!displayName) {
+        displayName = verifiedEmail.split('@')[0];
+      }
+
+      let user = store.users.find(u => u.username.trim().toLowerCase() === verifiedEmail);
+      if (!user) {
+        const hasAnyGoogleAdmin = store.users.some(u => u.username.includes('@') && u.role === 'Admin');
+        user = {
+          user_id: store.generateId('USR'),
+          username: verifiedEmail,
+          password: store.hashPassword(crypto.randomUUID()),
+          fullname: displayName,
+          phone: '',
+          position: 'ผู้ใช้งาน Google Workspace',
+          role: hasAnyGoogleAdmin ? ('User' as const) : ('Admin' as const),
+          department: store.departments[0]?.department_name || 'บริหารทั่วไป',
+          status: 'active' as const,
+          approval_note: 'ยืนยันตัวตนผ่าน Google Sign-In',
+          profile_photo: photoUrl,
+          created_at: new Date().toISOString()
+        };
+        store.users.push(user);
+      } else {
+        if (photoUrl && !user.profile_photo) {
+          user.profile_photo = photoUrl;
+        }
+      }
+
+      if (user.status === 'pending') {
+        return res.json({ success: false, message: 'บัญชีนี้กำลังรอการอนุมัติจากผู้ดูแลระบบ' });
+      }
+      if (user.status !== 'active') {
+        return res.json({ success: false, message: `บัญชีนี้ถูกระงับการใช้งาน (${user.status})` });
+      }
+
+      const token = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      store.sessions.push({
+        token,
+        user_id: user.user_id,
+        expires_at: expiresAt,
+        created_at: new Date().toISOString()
+      });
+      store.save();
+
+      const safeUser = { ...user };
+      delete safeUser.password;
+
+      res.json({
+        success: true,
+        message: 'เข้าสู่ระบบด้วย Google สำเร็จ',
+        token,
+        expires_at: expiresAt,
+        user: safeUser
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || 'ไม่สามารถยืนยันตัวตนผ่าน Google ได้' });
+    }
+  });
+
   app.post('/api/auth/register', (req, res) => {
-    const { username, password, fullname, phone, position, department } = req.body;
-    if (!username || !password || !fullname) {
+    const cleanUsername = String(req.body?.username || '').trim();
+    const rawPassword = String(req.body?.password || '');
+    const fullname = String(req.body?.fullname || '').trim();
+    const { phone, position, department } = req.body;
+    if (!cleanUsername || !rawPassword || !fullname) {
       return res.status(400).json({ success: false, message: 'กรุณากรอกข้อมูลที่จำเป็นให้ครบถ้วน' });
     }
 
-    if (store.users.some(u => u.username === username)) {
+    if (store.users.some(u => u.username.trim().toLowerCase() === cleanUsername.toLowerCase())) {
       return res.json({ success: false, message: 'ชื่อผู้ใช้งานนี้ถูกใช้ไปแล้ว' });
     }
 
     const newUser = {
       user_id: store.generateId('USR'),
-      username,
-      password: store.hashPassword(password),
+      username: cleanUsername,
+      password: store.hashPassword(rawPassword),
       fullname,
       phone: phone || '',
       position: position || '',
@@ -905,10 +1013,18 @@ async function startServer() {
           }
         }
       } else {
+        const cleanUsername = String(data.username || '').trim();
+        const rawPassword = String(data.password || '').trim();
+        if (!cleanUsername || !rawPassword) {
+          return res.status(400).json({ success: false, message: 'กรุณาระบุชื่อผู้ใช้งานและรหัสผ่าน' });
+        }
+        if (store.users.some(u => u.username.trim().toLowerCase() === cleanUsername.toLowerCase())) {
+          return res.json({ success: false, message: 'ชื่อผู้ใช้งานนี้มีอยู่ในระบบแล้ว' });
+        }
         const newUser = {
           user_id: store.generateId('USR'),
-          username: data.username,
-          password: store.hashPassword(data.password),
+          username: cleanUsername,
+          password: store.hashPassword(rawPassword),
           fullname: data.fullname,
           phone: data.phone || '',
           position: data.position || '',
