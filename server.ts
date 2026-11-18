@@ -1,7 +1,7 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import crypto from 'crypto';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { store } from './server/store.js';
 import {
@@ -12,9 +12,6 @@ import {
   extractSpreadsheetId,
   DEFAULT_SPREADSHEET_ID
 } from './server/sheets.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
@@ -1193,6 +1190,25 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
     }
+  });
+
+  app.get('/api/health', (_req, res) => {
+    res.json({ success: true, status: 'ok' });
+  });
+
+  // Return JSON 404 & errors for any unmatched /api/* route instead of HTML/plain text
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ success: false, message: 'ไม่พบ API Endpoint ที่ร้องขอ' });
+  });
+
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path.startsWith('/api/') || req.path === '/api') {
+      return res.status(err?.status || 500).json({
+        success: false,
+        message: err?.message || 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์'
+      });
+    }
+    next(err);
   });
 
   // --------------------------------------------------------------------------

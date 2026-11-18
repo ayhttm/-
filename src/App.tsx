@@ -23,6 +23,7 @@ import {
   safeSetStorageItem,
   safeRemoveStorageItem
 } from './lib/persistedState';
+import { fetchJsonWithRetry } from './lib/safeFetch';
 
 const DEFAULT_SPREADSHEET_ID = '10DfYf1oM8Vzp5NSIk9Rd9fvEcwqnet_A_c4WnzrzJU4';
 const VALID_TABS: TabType[] = [
@@ -73,10 +74,12 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`/api/initial-data?token=${useToken}`, {
-        headers: { Authorization: `Bearer ${useToken}` }
-      });
-      const json = await res.json();
+      const { data: json } = await fetchJsonWithRetry(
+        `/api/initial-data?token=${encodeURIComponent(useToken)}`,
+        {
+          headers: { Authorization: `Bearer ${useToken}` }
+        }
+      );
       if (json.success) {
         setCurrentUser(json.currentUser);
         setCategories(json.categories);
@@ -176,12 +179,11 @@ export default function App() {
     password: string
   ): Promise<{ success: boolean; message?: string }> => {
     try {
-      const res = await fetch('/api/auth/login', {
+      const { data: json } = await fetchJsonWithRetry('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username.trim(), password })
       });
-      const json = await res.json();
       if (json.success && json.token) {
         safeSetStorageItem('inventory_token', json.token);
         setCurrentUser(json.user);
@@ -203,7 +205,7 @@ export default function App() {
   const handleGoogleAppLogin = async (): Promise<{ success: boolean; message?: string }> => {
     try {
       const { user, accessToken } = await googleSignIn();
-      const res = await fetch('/api/auth/google-login', {
+      const { data: json } = await fetchJsonWithRetry('/api/auth/google-login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -214,7 +216,6 @@ export default function App() {
           picture: user.photoURL || ''
         })
       });
-      const json = await res.json();
       if (json.success && json.token) {
         safeSetStorageItem('inventory_token', json.token);
         setCurrentUser(json.user);
@@ -258,12 +259,19 @@ export default function App() {
   };
 
   const handleRegister = async (data: any) => {
-    const res = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    return await res.json();
+    try {
+      const { data: json } = await fetchJsonWithRetry('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      return json;
+    } catch (err: any) {
+      return {
+        success: false,
+        message: err?.message || 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้'
+      };
+    }
   };
 
   const handleRequestRequisitionItem = (item: Item) => {
